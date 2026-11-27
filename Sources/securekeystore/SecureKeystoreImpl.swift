@@ -88,10 +88,9 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                 sign in
                 (sign != nil) ? onSuccess(sign!) : onFailure("","RSA signing failed")
             }
-        } else if signAlgorithm == "ECR1" {
-            ecr1CryptoManager.sign(data: messageData, withKeyTag: alias){
-                sign in
-                (sign != nil) ? onSuccess(sign!) : onFailure("","EC signing failed")
+        } else if isES256(signAlgorithm) {
+            ecr1CryptoManager.sign(data: messageData, withKeyTag: alias) { result in
+                deliver(result.map { $0.base64URLEncodedString() }, onSuccess: onSuccess, onFailure: onFailure)
             }
         } else {
             onFailure("","Invalid key type")
@@ -99,6 +98,21 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
         
     }
     
+    /// Signs raw bytes with the ES256 key; takes and returns base64, the signature DER-encoded as on Android.
+    public func signBytes(signAlgorithm: String, alias: String, dataBase64: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void) {
+        guard isES256(signAlgorithm) else {
+            onFailure(KeystoreErrorCode.unsupportedAlgorithm.rawValue, "signBytes supports ES256 only")
+            return
+        }
+        guard let data = Data(base64Encoded: dataBase64) else {
+            onFailure(KeystoreErrorCode.invalidInput.rawValue, "Data to sign is not base64")
+            return
+        }
+        ecr1CryptoManager.sign(data: data, withKeyTag: alias) { result in
+            deliver(result.map { $0.base64EncodedString() }, onSuccess: onSuccess, onFailure: onFailure)
+        }
+    }
+
     public func retrieveKey(tag: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
         keychainManager.retrieveKey(tag: tag){ key, resultMessage in
             key != nil ? onSuccess(key!.toPKCS8PublicKeyString()!) : onFailure("", resultMessage)
@@ -279,4 +293,11 @@ private func isES256(_ algorithm: String) -> Bool {
 // -1 means the key never asks for user authentication
 private func authTimeoutInterval(required: Bool, seconds: Int32) -> TimeInterval {
     required ? TimeInterval(seconds) : -1
+}
+
+private func deliver<T>(_ result: Result<T, KeystoreFailure>, onSuccess: (T) -> Void, onFailure: (_ code: String, _ message: String) -> Void) {
+    switch result {
+    case .success(let value): onSuccess(value)
+    case .failure(let failure): onFailure(failure.code.rawValue, failure.message)
+    }
 }
