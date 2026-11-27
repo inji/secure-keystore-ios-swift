@@ -45,17 +45,15 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                     onFailure("","Key storing error")
                 }
             }
-        } else if type == "ECR1" {
+        } else if isES256(type) {
             let ecr1KeyManager = ECR1KeyManager()
-            ecr1KeyManager.generateKeyPair(tag: tag) { success, privateKey, publicKey in
-                if success {
-                    self.keychainManager.storeKey(key: privateKey!, tag: tag) { success in
-                        setAuthTimeOutForKey(keyType: type, authTimeout:isAuthRequired == true ? TimeInterval(authTimeout):TimeInterval(Int.max))
-                        onSuccess((publicKey?.toPKCS8PublicKeyString())!)
-                    }
-                } else {
-                    onFailure("","Key storing error")
+            ecr1KeyManager.generateKeyPair(tag: tag) { success, _, publicKey in
+                guard success, let publicKeyPem = publicKey?.toPKCS8PublicKeyString() else {
+                    onFailure(KeystoreErrorCode.keyGenerationError.rawValue, "Unable to create the ES256 key in the Secure Enclave")
+                    return
                 }
+                setAuthTimeOutForKey(keyType: tag, authTimeout: authTimeoutInterval(required: isAuthRequired, seconds: authTimeout))
+                onSuccess(publicKeyPem)
             }
         } else {
             onFailure("","Key generation error")
@@ -157,28 +155,22 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
     }
     
     public func generateKey(alias: String, authRequired:Bool, authTimeout:Int32, onSuccess: @escaping (Bool) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
-        
         keychainManager.keyExists(tag: alias) { exists in
             if exists {
-                // If the key exists, return success immediately
                 onSuccess(true)
-            } else {
-                // If the key does not exist, generate a new one
-                self.aesKeyManager.generateKeyPair(tag: alias) { success, privateKey, publicKey in
-                    if success {
-                        setAuthTimeOutForKey(keyType: alias, authTimeout:authRequired == true ? TimeInterval(authTimeout):TimeInterval(-1))
-                        // Store the new key in the keychain
-                        self.keychainManager.storeKey(key: privateKey!, tag: alias) { storeSuccess in
-                            storeSuccess ? onSuccess(true) : onFailure("KEY_STORE_ERROR", "Failed to store AES key")
-                        }
-                    } else {
-                        onFailure("KEY_GENERATION_ERROR", "Failed to generate AES key")
-                    }
+                return
+            }
+            self.aesKeyManager.generateKeyPair(tag: alias) { success, _, _ in
+                guard success else {
+                    onFailure(KeystoreErrorCode.keyGenerationError.rawValue, "Unable to create the encryption key in the Secure Enclave")
+                    return
                 }
+                setAuthTimeOutForKey(keyType: alias, authTimeout: authTimeoutInterval(required: authRequired, seconds: authTimeout))
+                onSuccess(true)
             }
         }
     }
-    
+
     public func encryptData(alias:String, data:String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void)
     {
         aesCryptoManager.encrypt(keyTag: alias, data: data){ result in
@@ -278,4 +270,13 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                 onFailure("SYNC_FAILED", "Failed to synchronize iCloud Key-Value store.")
             }
         }
+}
+
+private func isES256(_ algorithm: String) -> Bool {
+    algorithm == "ES256" || algorithm == "ECR1"
+}
+
+// -1 means the key never asks for user authentication
+private func authTimeoutInterval(required: Bool, seconds: Int32) -> TimeInterval {
+    required ? TimeInterval(seconds) : -1
 }
