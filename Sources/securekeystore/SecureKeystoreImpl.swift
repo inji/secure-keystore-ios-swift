@@ -45,17 +45,15 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                     onFailure("","Key storing error")
                 }
             }
-        } else if type == "ECR1" {
+        } else if isES256(type) {
             let ecr1KeyManager = ECR1KeyManager()
-            ecr1KeyManager.generateKeyPair(tag: tag) { success, privateKey, publicKey in
-                if success {
-                    self.keychainManager.storeKey(key: privateKey!, tag: tag) { success in
-                        setAuthTimeOutForKey(keyType: type, authTimeout:isAuthRequired == true ? TimeInterval(authTimeout):TimeInterval(Int.max))
-                        onSuccess((publicKey?.toPKCS8PublicKeyString())!)
-                    }
-                } else {
-                    onFailure("","Key storing error")
+            ecr1KeyManager.generateKeyPair(tag: tag) { success, _, publicKey in
+                guard success, let publicKeyPem = publicKey?.toPKCS8PublicKeyString() else {
+                    onFailure(KeystoreErrorCode.keyGenerationError.rawValue, "Unable to create the ES256 key in the Secure Enclave")
+                    return
                 }
+                setAuthTimeOutForKey(keyType: tag, authTimeout: authTimeoutInterval(required: isAuthRequired, seconds: authTimeout))
+                onSuccess(publicKeyPem)
             }
         } else {
             onFailure("","Key generation error")
@@ -90,10 +88,9 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                 sign in
                 (sign != nil) ? onSuccess(sign!) : onFailure("","RSA signing failed")
             }
-        } else if signAlgorithm == "ECR1" {
-            ecr1CryptoManager.sign(data: messageData, withKeyTag: alias){
-                sign in
-                (sign != nil) ? onSuccess(sign!) : onFailure("","EC signing failed")
+        } else if isES256(signAlgorithm) {
+            ecr1CryptoManager.sign(data: messageData, withKeyTag: alias) { result in
+                deliver(result.map { $0.base64URLEncodedString() }, onSuccess: onSuccess, onFailure: onFailure)
             }
         } else {
             onFailure("","Invalid key type")
@@ -101,9 +98,28 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
         
     }
     
+    /// Signs raw bytes with the ES256 key; takes and returns base64, the signature DER-encoded as on Android.
+    public func signBytes(signAlgorithm: String, alias: String, dataBase64: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void) {
+        guard isES256(signAlgorithm) else {
+            onFailure(KeystoreErrorCode.unsupportedAlgorithm.rawValue, "signBytes supports ES256 only")
+            return
+        }
+        guard let data = Data(base64Encoded: dataBase64) else {
+            onFailure(KeystoreErrorCode.invalidInput.rawValue, "Data to sign is not base64")
+            return
+        }
+        ecr1CryptoManager.sign(data: data, withKeyTag: alias) { result in
+            deliver(result.map { $0.base64EncodedString() }, onSuccess: onSuccess, onFailure: onFailure)
+        }
+    }
+
     public func retrieveKey(tag: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
-        keychainManager.retrieveKey(tag: tag){ key, resultMessage in
-            key != nil ? onSuccess(key!.toPKCS8PublicKeyString()!) : onFailure("", resultMessage)
+        keychainManager.retrievePublicKey(tag: tag) { publicKey in
+            guard let publicKeyPem = publicKey?.toPKCS8PublicKeyString() else {
+                onFailure(KeystoreErrorCode.keyNotFound.rawValue, "No public key found for \(tag)")
+                return
+            }
+            onSuccess(publicKeyPem)
         }
     }
     
@@ -157,51 +173,36 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
     }
     
     public func generateKey(alias: String, authRequired:Bool, authTimeout:Int32, onSuccess: @escaping (Bool) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
-        
         keychainManager.keyExists(tag: alias) { exists in
             if exists {
-                // If the key exists, return success immediately
                 onSuccess(true)
-            } else {
-                // If the key does not exist, generate a new one
-                self.aesKeyManager.generateKeyPair(tag: alias) { success, privateKey, publicKey in
-                    if success {
-                        setAuthTimeOutForKey(keyType: alias, authTimeout:authRequired == true ? TimeInterval(authTimeout):TimeInterval(-1))
-                        // Store the new key in the keychain
-                        self.keychainManager.storeKey(key: privateKey!, tag: alias) { storeSuccess in
-                            storeSuccess ? onSuccess(true) : onFailure("KEY_STORE_ERROR", "Failed to store AES key")
-                        }
-                    } else {
-                        onFailure("KEY_GENERATION_ERROR", "Failed to generate AES key")
-                    }
+                return
+            }
+            self.aesKeyManager.generateKeyPair(tag: alias) { success, _, _ in
+                guard success else {
+                    onFailure(KeystoreErrorCode.keyGenerationError.rawValue, "Unable to create the encryption key in the Secure Enclave")
+                    return
                 }
+                setAuthTimeOutForKey(keyType: alias, authTimeout: authTimeoutInterval(required: authRequired, seconds: authTimeout))
+                onSuccess(true)
             }
         }
     }
-    
+
     public func encryptData(alias:String, data:String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void)
     {
-        aesCryptoManager.encrypt(keyTag: alias, data: data){ result in
-            if let encryptedData = result, encryptedData != BiometricAuthentication.failed.statusMessage {
-                onSuccess(encryptedData)
-            }
-            else{
-                onFailure("", "Encryption failed: \(result!)")
-            }
+        aesCryptoManager.encrypt(keyTag: alias, data: data) { result in
+            deliver(result, onSuccess: onSuccess, onFailure: onFailure)
         }
     }
-    
+
     public func decryptData(alias:String, data:String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void)
     {
-        aesCryptoManager.decrypt(keyTag: alias, data: data){ result in
-            if let decryptedText = result, decryptedText != BiometricAuthentication.failed.statusMessage {
-                onSuccess(decryptedText)
-            } else {
-                onFailure("", "Decryption failed: \(result!)")
-            }
+        aesCryptoManager.decrypt(keyTag: alias, data: data) { result in
+            deliver(result, onSuccess: onSuccess, onFailure: onFailure)
         }
     }
-    
+
     @available(iOS 13.0, *)
     public func generateHmacshaKey(alias:String, onSuccess: @escaping (Bool) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
         let hmacKeyManager: ()=HMACKeyManager().generateHmacshaKey(tag: alias){ success, key in
@@ -278,4 +279,20 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
                 onFailure("SYNC_FAILED", "Failed to synchronize iCloud Key-Value store.")
             }
         }
+}
+
+private func isES256(_ algorithm: String) -> Bool {
+    algorithm == "ES256" || algorithm == "ECR1"
+}
+
+// -1 means the key never asks for user authentication
+private func authTimeoutInterval(required: Bool, seconds: Int32) -> TimeInterval {
+    required ? TimeInterval(seconds) : -1
+}
+
+private func deliver<T>(_ result: Result<T, KeystoreFailure>, onSuccess: (T) -> Void, onFailure: (_ code: String, _ message: String) -> Void) {
+    switch result {
+    case .success(let value): onSuccess(value)
+    case .failure(let failure): onFailure(failure.code.rawValue, failure.message)
+    }
 }

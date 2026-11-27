@@ -11,6 +11,8 @@ public protocol SecureKeystoreProtocol {
     
     func sign(signAlgorithm: String, alias: String, data: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String, _ message: String) -> Void)
     
+    func signBytes(signAlgorithm: String, alias: String, dataBase64: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String, _ message: String) -> Void)
+    
     func storeGenericKey(publicKey: String, privateKey: String, account: String, onSuccess: @escaping (Bool) -> Void, onFailure: @escaping(_ code: String, _ message: String) -> Void)
     
     func retrieveGenericKey(account: String, onSuccess: @escaping (String?, String?) -> Void, onFailure: @escaping(_ code: String, _ message: String) -> Void)
