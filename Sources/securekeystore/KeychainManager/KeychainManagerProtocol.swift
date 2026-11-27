@@ -4,6 +4,7 @@ import Foundation
 protocol KeychainManagerProtocol {
     func storeKey(key: SecKey, tag: String,completion: @escaping (Bool) -> Void)
     func retrieveKey(tag: String,completion: @escaping (SecKey?, String) -> Void)
+    func retrievePublicKey(tag: String, completion: @escaping (SecKey?) -> Void)
     func deleteKey(tag: String,completion: @escaping (String) -> Void)
     func storeGenericKey(data: Data?, account: String,completion: @escaping (Bool) -> Void)
     func retrieveGenericKey(account: String, completion: @escaping (Data?, String?) -> Void)

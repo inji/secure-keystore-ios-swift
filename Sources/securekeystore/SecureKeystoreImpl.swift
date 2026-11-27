@@ -114,8 +114,12 @@ public class SecureKeystoreImpl:SecureKeystoreProtocol {
     }
 
     public func retrieveKey(tag: String, onSuccess: @escaping (String) -> Void, onFailure: @escaping(_ code: String,_ message: String)->Void){
-        keychainManager.retrieveKey(tag: tag){ key, resultMessage in
-            key != nil ? onSuccess(key!.toPKCS8PublicKeyString()!) : onFailure("", resultMessage)
+        keychainManager.retrievePublicKey(tag: tag) { publicKey in
+            guard let publicKeyPem = publicKey?.toPKCS8PublicKeyString() else {
+                onFailure(KeystoreErrorCode.keyNotFound.rawValue, "No public key found for \(tag)")
+                return
+            }
+            onSuccess(publicKeyPem)
         }
     }
     

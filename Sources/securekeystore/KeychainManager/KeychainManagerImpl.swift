@@ -79,8 +79,27 @@ class KeychainManagerImpl: KeychainManagerProtocol {
             }
         }
     }
-    
-    
+
+    // reading a public key needs no user authentication, only private key use does (as on Android)
+    func retrievePublicKey(tag: String, completion: @escaping (SecKey?) -> Void) {
+        keychainQueue.async {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: tag,
+                kSecAttrLabel as String: tag + "label",
+                kSecReturnRef as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne
+            ]
+            var item: CFTypeRef?
+            guard SecItemCopyMatching(query as NSDictionary, &item) == errSecSuccess,
+                  let item, CFGetTypeID(item) == SecKeyGetTypeID() else {
+                completion(nil)
+                return
+            }
+            completion(SecKeyCopyPublicKey(item as! SecKey))
+        }
+    }
+
     func deleteKey(tag: String, completion: @escaping (String) -> Void) {
         keychainQueue.async {
             self.authenticateUser(keyType:tag) { result in
