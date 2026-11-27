@@ -1,50 +1,58 @@
 import Foundation
 
-class AESCryptoManager:BaseCryptoManagerImpl{
-    
-    func encrypt(keyTag:String,data: String, completion: @escaping (String?)->Void){
-        fetchPrivateKeyRef(tag: keyTag) { success, privateKey, resultMessage  in
-            guard success, let privateKey = privateKey else {
-                completion(resultMessage)
+class AESCryptoManager: BaseCryptoManagerImpl {
+
+    private static let algorithm: SecKeyAlgorithm = .eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+
+    func encrypt(keyTag: String, data: String, completion: @escaping (Result<String, KeystoreFailure>) -> Void) {
+        fetchPrivateKeyRef(tag: keyTag) { success, privateKey, resultMessage in
+            guard success, let privateKey else {
+                completion(.failure(KeystoreFailure(.keyNotFound, resultMessage ?? "Key not found")))
                 return
             }
-            
-            let publicKey=SecKeyCopyPublicKey(privateKey)
+            guard let publicKey = SecKeyCopyPublicKey(privateKey), let plaintext = data.data(using: .utf8) else {
+                completion(.failure(KeystoreFailure(.invalidInput, "Unable to prepare data for encryption")))
+                return
+            }
             var error: Unmanaged<CFError>?
             guard let encryptedData = SecKeyCreateEncryptedData(
-                publicKey!,
-                .eciesEncryptionCofactorVariableIVX963SHA256AESGCM,
-                data.data(using: .utf8)! as CFData,
+                publicKey,
+                Self.algorithm,
+                plaintext as CFData,
                 &error
-            ) else {
-                print("Error encrypting data: \(error!.takeRetainedValue() as Error)")
-                completion(resultMessage)
-                return
-               }
-            completion((encryptedData as Data).base64EncodedString())
-        }
-    }
-    
-    func decrypt(keyTag:String,data: String, completion: @escaping (String?)->Void){
-        fetchPrivateKeyRef(tag: keyTag) { success, privateKey, resultMessage in
-            guard let privateKey = privateKey else {
-                completion(resultMessage)
+            ) as Data? else {
+                completion(.failure(KeystoreFailure(.encryptionFailed, error: error, fallback: "Encryption failed")))
                 return
             }
-            let cipherData=Data(base64Encoded: data)
+            completion(.success(encryptedData.base64EncodedString()))
+        }
+    }
+
+    func decrypt(keyTag: String, data: String, completion: @escaping (Result<String, KeystoreFailure>) -> Void) {
+        fetchPrivateKeyRef(tag: keyTag) { success, privateKey, resultMessage in
+            guard success, let privateKey else {
+                completion(.failure(KeystoreFailure(.keyNotFound, resultMessage ?? "Key not found")))
+                return
+            }
+            guard let cipherData = Data(base64Encoded: data) else {
+                completion(.failure(KeystoreFailure(.invalidInput, "Encrypted data is not base64")))
+                return
+            }
             var error: Unmanaged<CFError>?
             guard let decryptedData = SecKeyCreateDecryptedData(
                 privateKey,
-                .eciesEncryptionCofactorVariableIVX963SHA256AESGCM,
-                cipherData! as CFData,
+                Self.algorithm,
+                cipherData as CFData,
                 &error
-            ) else {
-                print("Error decrypting data: \(error!.takeRetainedValue() as Error)")
-                completion(resultMessage)
+            ) as Data? else {
+                completion(.failure(KeystoreFailure(.decryptionFailed, error: error, fallback: "Decryption failed")))
                 return
-               }
-            
-            completion(String(data: decryptedData as Data,encoding: .utf8))
+            }
+            guard let plaintext = String(data: decryptedData, encoding: .utf8) else {
+                completion(.failure(KeystoreFailure(.decryptionFailed, "Decrypted data is not UTF-8")))
+                return
+            }
+            completion(.success(plaintext))
         }
     }
 }
